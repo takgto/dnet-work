@@ -1,0 +1,72 @@
+# =============================================================================
+# YOLOv3/YOLOv3-tiny 学習設定ファイル
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 実験リスト
+# -----------------------------------------------------------------------------
+experiments:
+  # YOLOv3-tiny
+  - resolution: 416
+    model: yolov3-tiny
+    clear: true           # 最初から学習
+
+  - resolution: 512
+    model: yolov3-tiny
+    clear: true
+
+  # - resolution: 608
+  #   model: yolov3-tiny
+  #   clear: true
+
+  # YOLOv3
+  # - resolution: 416
+  #   model: yolov3
+  #   clear: true
+
+  # - resolution: 512
+  #   model: yolov3
+  #   clear: true
+
+  # 特殊なケース例
+  # - resolution: 512
+  #   model: yolov3-tiny
+  #   resume_weights: work/backup/yolov3-tiny-512_10000.weights  # 途中から再開
+
+  # - resolution: 512
+  #   model: yolov3-tiny
+  #   skip_train: true    # mAP計算のみ
+
+# -----------------------------------------------------------------------------
+# GPU設定
+# -----------------------------------------------------------------------------
+gpus:
+  train: "0"        # 学習用GPU
+  map: "0,1"        # mAP計算用GPU
+
+# -----------------------------------------------------------------------------
+# Docker設定
+# -----------------------------------------------------------------------------
+docker:
+  image: darknet_compose:ubuntu
+  workspace_mount: /workspace
+  data_mount: /data2:/data2
+
+# -----------------------------------------------------------------------------
+# パス設定
+# -----------------------------------------------------------------------------
+# work_dirを指定すれば、以下が自動設定されます：
+#   - log_dir:    work_dir/log
+#   - work_subdir: work_dir/work
+#   - backup_dir: work_dir/work/backup
+#   - data_file:  work_dir/work/obj.data（自動生成）
+#   - train_file: work_dir/work/train.txt
+#   - val_file:   work_dir/work/val.txt
+#   - names_file: work_dir/work/obj.names
+#
+# コマンドライン引数 --work-dir (-w) で上書き可能
+# クラス数は3で固定（スクリプト内で定義）
+
+paths:
+  work_dir: work_dir
+  darknet_path: /workspace/darknet/darknet

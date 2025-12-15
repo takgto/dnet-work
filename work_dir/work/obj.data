@@ -1,0 +1,5 @@
+classes = 3
+train = dnet-work/work_dir/work/train.txt
+valid = dnet-work/work_dir/work/val.txt
+names = dnet-work/work_dir/work/obj.names
+backup = dnet-work/work_dir/work/backup
