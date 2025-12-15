@@ -8,19 +8,19 @@ python scripts and configurable files for executing darknet training on nedo ser
    まず、
    cd /data2/goto_data/darknet
    
-  # 作業ディレクトリを必ず指定、ここではwork_dirとする。-rで解像度を指定できる。
+  ##作業ディレクトリを必ず指定、ここではwork_dirとする。-rで解像度を指定でき
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir
   
-  # 最初から学習
+  ##最初から
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir --clear
   
-  # 特定のweightsから再開
+  ## 特定のweightsから再開
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir --resume work/backup/yolov3-tiny-512_10000.weights
   
-  # mAP計算のみ
+  ## mAP計算のみ
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir --skip-train
   
-  # GPUを指定
+  ## GPUを指定
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir --gpus-train 0,1,2,3 --gpus-map 0,1
 
 ## コマンドラインオプション
