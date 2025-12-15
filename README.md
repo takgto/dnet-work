@@ -3,26 +3,34 @@ python scripts and configurable files for executing darknet training on nedo ser
 
 ## 作業手順（サーバーでのDarkent学習方法）
 1. 自分の作業ディレクトリを/data2/goto_data/darknet/dnet-worの下に作る。
+   ```bash
    cp -r /data2/goto_data/darknet/dnet-work/work_dir /data2/goto_data/darknet/dnet-work/{自分の作業ディレクトリ名、(your name)_dirとか}
-2. 学習をdnet-workの下で実行する。
+   ```
+3. 学習をdnet-workの下で実行する。
    まず、
+   ```bash
    cd /data2/goto_data/darknet
-   
-  ### 作業ディレクトリを必ず指定、ここではwork_dirとする。-rで解像度を指定でき
+   ```
+  ### 作業ディレクトリを必ず指定、ここではwork_dirとする。-rで解像度を指定できる。
+  ```bash
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir
-  
+  ```
   ### 最初から
+  ```bash
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir --clear
-  
+  ```
   ### 特定のweightsから再開
+  ```bash
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir --resume work/backup/yolov3-tiny-512_10000.weights
-  
+  ```
   ### mAP計算のみ
+  ```bash
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir --skip-train
-  
+  ```
   ### GPUを指定
+  ```bash
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir --gpus-train 0,1,2,3 --gpus-map 0,1
-
+  ```
 ### コマンドラインオプション
 | オプション | 短縮形 | 説明 |
 |-----------|--------|------|
@@ -38,6 +46,8 @@ python scripts and configurable files for executing darknet training on nedo ser
 | `--gpus-map` | - | mAP計算用GPU |
 | `--docker-image` | - | Dockerイメージ名 |
 
-これらオプションのデフォルト値は、
-/data2/goto_data/darknet/dnet-work/scripts/config.yamlに記述されている。
+これらオプションのデフォルト値は、次のconfig.yamlに記述されている。
+```bash
+/data2/goto_data/darknet/dnet-work/scripts/config.yaml
+```
 コマンドラインオプションで指定しなくともこのファイルの記述を変えればオプション値は変更可能である。
