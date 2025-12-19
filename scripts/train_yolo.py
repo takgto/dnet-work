@@ -109,12 +109,12 @@ MODELS = {
     "yolov3": ModelConfig(
         name="yolov3",
         base_cfg="yolov3-416.cfg",
-        pretrained_weights="darknet53.conv.74"
+        pretrained_weights="/workspace/darknet53.conv.74"
     ),
     "yolov3-tiny": ModelConfig(
         name="yolov3-tiny",
         base_cfg="yolov3-tiny-416.cfg",
-        pretrained_weights="darknet19_448.conv.23"
+        pretrained_weights="/workspace/darknet19_448.conv.23"
     )
 }
 
@@ -191,7 +191,6 @@ def generate_docker_script(
     val_file: str,
     final_weights: str,
     log_dir: str,
-    config_name: str,
     skip_train: bool = False
 ) -> None:
     """Docker内で実行するスクリプトを生成"""
@@ -199,11 +198,13 @@ def generate_docker_script(
     script_content = f'''#!/bin/bash
 set -e
 
-cd /workspace
+# 実行ディレクトリをwork_dirに変更（チャートファイルがここに出力される）
+cd /workspace/{log_dir}
 
 SCRIPT_START=$(date +%s)
 echo "=========================================="
 echo "Training started at: $(date)"
+echo "Working directory: $(pwd)"
 echo "=========================================="
 
 '''
@@ -213,23 +214,11 @@ echo "=========================================="
 # 学習実行
 TRAIN_START=$(date +%s)
 
-# log_dirが存在することを確認
-mkdir -p /workspace/{log_dir}
-
-# チャートファイルのシンボリックリンクを作成（学習中からlog_dirに保存されるように）
-rm -f /workspace/chart.png /workspace/chart_{config_name}.png
-ln -s /workspace/{log_dir}/chart.png /workspace/chart.png
-ln -s /workspace/{log_dir}/chart_{config_name}.png /workspace/chart_{config_name}.png
-echo "Chart files will be saved to {log_dir}/"
-
 echo ""
 echo "[Training Command]"
 echo "{train_cmd}"
 echo ""
 {train_cmd} 2>&1 | tee /workspace/{train_log}
-
-# シンボリックリンクを削除
-rm -f /workspace/chart.png /workspace/chart_{config_name}.png
 
 TRAIN_END=$(date +%s)
 TRAIN_ELAPSED=$((TRAIN_END - TRAIN_START))
@@ -351,19 +340,25 @@ class YOLOTrainer:
             start_weights = model_config.pretrained_weights
             print(f"Starting from: {start_weights}")
         
-        # Step 3: コマンド構築
+        # Step 3: コマンド構築（Docker内の絶対パスを使用）
         clear_flag = "-clear" if exp.clear else ""
-        chart_path = f"{self.paths.log_dir}/chart_{exp.model}-{exp.resolution}.png"
+        
+        # Docker内の絶対パス
+        ws = "/workspace"
+        abs_data_file = f"{ws}/{self.paths.data_file}"
+        abs_output_cfg = f"{ws}/{output_cfg}"
+        abs_final_weights = f"{ws}/{final_weights}"
+        abs_chart_path = f"{ws}/{self.paths.log_dir}/chart_{exp.model}-{exp.resolution}.png"
         
         train_cmd = (
             f"{self.paths.darknet_path} detector train "
-            f"{self.paths.data_file} {output_cfg} {start_weights} "
-            f"-dont_show -gpus {self.gpu.train} -chart {chart_path} {clear_flag}"
+            f"{abs_data_file} {abs_output_cfg} {start_weights} "
+            f"-dont_show -gpus {self.gpu.train} -chart {abs_chart_path} {clear_flag}"
         ).strip()
         
         map_cmd = (
             f"{self.paths.darknet_path} detector map "
-            f"{self.paths.data_file} {output_cfg} {final_weights} "
+            f"{abs_data_file} {abs_output_cfg} {abs_final_weights} "
             f"-dont_show -ext_output -gpus {self.gpu.map}"
         )
         
@@ -382,7 +377,6 @@ class YOLOTrainer:
             val_file=self.paths.val_file,
             final_weights=str(final_weights),
             log_dir=str(self.paths.log_dir),
-            config_name=f"{exp.model}-{exp.resolution}",
             skip_train=exp.skip_train
         )
         
