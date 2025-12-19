@@ -190,6 +190,8 @@ def generate_docker_script(
     results_file: str,
     val_file: str,
     final_weights: str,
+    log_dir: str,
+    config_name: str,
     skip_train: bool = False
 ) -> None:
     """Docker内で実行するスクリプトを生成"""
@@ -210,11 +212,24 @@ echo "=========================================="
         script_content += f'''
 # 学習実行
 TRAIN_START=$(date +%s)
+
+# log_dirが存在することを確認
+mkdir -p /workspace/{log_dir}
+
+# チャートファイルのシンボリックリンクを作成（学習中からlog_dirに保存されるように）
+rm -f /workspace/chart.png /workspace/chart_{config_name}.png
+ln -s /workspace/{log_dir}/chart.png /workspace/chart.png
+ln -s /workspace/{log_dir}/chart_{config_name}.png /workspace/chart_{config_name}.png
+echo "Chart files will be saved to {log_dir}/"
+
 echo ""
 echo "[Training Command]"
 echo "{train_cmd}"
 echo ""
 {train_cmd} 2>&1 | tee /workspace/{train_log}
+
+# シンボリックリンクを削除
+rm -f /workspace/chart.png /workspace/chart_{config_name}.png
 
 TRAIN_END=$(date +%s)
 TRAIN_ELAPSED=$((TRAIN_END - TRAIN_START))
@@ -366,6 +381,8 @@ class YOLOTrainer:
             results_file=results_file,
             val_file=self.paths.val_file,
             final_weights=str(final_weights),
+            log_dir=str(self.paths.log_dir),
+            config_name=f"{exp.model}-{exp.resolution}",
             skip_train=exp.skip_train
         )
         
