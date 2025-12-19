@@ -15,6 +15,10 @@ python scripts and configurable files for executing darknet training on nedo ser
    ```bash
    cd /data2/goto_data/darknet
    ```
+   仮想環境を有効にする
+   ```bash
+   conda activate darknet
+   ```
   ### 作業ディレクトリを必ず指定、ここではwork_dirとする。-rで解像度を指定できる、gpu番号は0, mAP計算用gpuも0、yolov3のタイプはtiny, -tinyを付けなければ通常のyolov3　
   ```bash
   python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir --gpus-train 0 --gpus-map 0
