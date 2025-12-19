@@ -2,7 +2,11 @@
 python scripts and configurable files for executing darknet training on nedo server.
 
 ## 作業手順（サーバーでのDarkent学習方法）
-1. 自分の作業ディレクトリを/data2/goto_data/darknet/dnet-worの下に作る。
+1. windows power shellからssh loginする。
+   ```bash
+   ssh guest@<ip address>:/home/guest
+   ```
+2. 自分の作業ディレクトリを/data2/goto_data/darknet/dnet-worの下に作る。
    ```bash
    cp -r /data2/goto_data/darknet/dnet-work/work_dir /data2/goto_data/darknet/dnet-work/{自分の作業ディレクトリ名、(your name)_dirとか}
    ```
@@ -11,9 +15,9 @@ python scripts and configurable files for executing darknet training on nedo ser
    ```bash
    cd /data2/goto_data/darknet
    ```
-  ### 作業ディレクトリを必ず指定、ここではwork_dirとする。-rで解像度を指定できる。
+  ### 作業ディレクトリを必ず指定、ここではwork_dirとする。-rで解像度を指定できる、gpu番号は0, mAP計算用gpuも0、yolov3のタイプはtiny, -tinyを付けなければ通常のyolov3　
   ```bash
-  python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir
+  python ./dnet-work/scripts/train_yolo.py -r 512 -m yolov3-tiny -w ./work_dir --gpus-train 0 --gpus-map 0
   ```
   ### 最初から学習させる場合
   ```bash
