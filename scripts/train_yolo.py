@@ -166,13 +166,14 @@ def generate_cfg(
 
 
 def generate_obj_data(path_config: PathConfig) -> bool:
-    """obj.dataファイルを自動生成"""
+    """obj.dataファイルを自動生成（Docker内の絶対パスを使用）"""
     
+    ws = "/workspace"
     obj_data_content = f"""classes = {NUM_CLASSES}
-train = {path_config.train_file}
-valid = {path_config.val_file}
-names = {path_config.names_file}
-backup = {path_config.backup_dir}
+train = {ws}/{path_config.train_file}
+valid = {ws}/{path_config.val_file}
+names = {ws}/{path_config.names_file}
+backup = {ws}/{path_config.backup_dir}
 """
     
     obj_data_path = Path(path_config.data_file)
@@ -191,6 +192,8 @@ def generate_docker_script(
     val_file: str,
     final_weights: str,
     log_dir: str,
+    work_dir: str,
+    config_name: str,
     skip_train: bool = False
 ) -> None:
     """Docker内で実行するスクリプトを生成"""
@@ -199,7 +202,7 @@ def generate_docker_script(
 set -e
 
 # 実行ディレクトリをwork_dirに変更（チャートファイルがここに出力される）
-cd /workspace/{log_dir}
+cd /workspace/{work_dir}
 
 SCRIPT_START=$(date +%s)
 echo "=========================================="
@@ -230,6 +233,16 @@ echo ""
 echo "Training completed at: $(date)"
 echo "Training time: ${{TRAIN_HOURS}}h ${{TRAIN_MINUTES}}m ${{TRAIN_SECONDS}}s (${{TRAIN_ELAPSED}} seconds)"
 echo ""
+
+# チャートファイルをログディレクトリにコピー
+if [ -f "/workspace/{work_dir}/chart.png" ]; then
+    cp /workspace/{work_dir}/chart.png /workspace/{log_dir}/
+    echo "Copied chart.png to {log_dir}/"
+fi
+if [ -f "/workspace/{work_dir}/chart_{config_name}.png" ]; then
+    cp /workspace/{work_dir}/chart_{config_name}.png /workspace/{log_dir}/
+    echo "Copied chart_{config_name}.png to {log_dir}/"
+fi
 
 '''
     
@@ -348,12 +361,18 @@ class YOLOTrainer:
         abs_data_file = f"{ws}/{self.paths.data_file}"
         abs_output_cfg = f"{ws}/{output_cfg}"
         abs_final_weights = f"{ws}/{final_weights}"
-        abs_chart_path = f"{ws}/{self.paths.log_dir}/chart_{exp.model}-{exp.resolution}.png"
         
+        # start_weightsを絶対パスに変換（既に/workspaceで始まっている場合はそのまま）
+        if start_weights.startswith("/workspace"):
+            abs_start_weights = start_weights
+        else:
+            abs_start_weights = f"{ws}/{start_weights}"
+        
+        # チャートは実行ディレクトリ(/workspace)に自動出力され、学習後にlog_dirにコピー
         train_cmd = (
             f"{self.paths.darknet_path} detector train "
-            f"{abs_data_file} {abs_output_cfg} {start_weights} "
-            f"-dont_show -gpus {self.gpu.train} -chart {abs_chart_path} {clear_flag}"
+            f"{abs_data_file} {abs_output_cfg} {abs_start_weights} "
+            f"-dont_show -gpus {self.gpu.train} {clear_flag}"
         ).strip()
         
         map_cmd = (
@@ -377,6 +396,8 @@ class YOLOTrainer:
             val_file=self.paths.val_file,
             final_weights=str(final_weights),
             log_dir=str(self.paths.log_dir),
+            work_dir=str(self.paths.work_dir),
+            config_name=f"{exp.model}-{exp.resolution}",
             skip_train=exp.skip_train
         )
         
