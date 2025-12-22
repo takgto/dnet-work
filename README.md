@@ -59,3 +59,15 @@ python scripts and configurable files for executing darknet training on nedo ser
 /data2/goto_data/darknet/dnet-work/scripts/config.yaml
 ```
 コマンドラインオプションで指定しなくともこのファイルの記述を変えればオプション値は変更可能である。
+
+### 途中結果の確認 
+dnet-work/work_dir(自分で作ったディレクトリ)の下に 
+- chart.png 
+- cart_yolov3-#####.png (#####はconfig名になる） 
+ができて、途中経過のグラフ(Loss vs iteration）を見ることができる。 
+<img width="856" height="891" alt="image" src="https://github.com/user-attachments/assets/ddac545b-6fe1-4929-a463-db10d60b8ead" />
+
+結果の重みファイルは、dnet-work/work_dir/work/backup に次のようにできる。
+
+
+
