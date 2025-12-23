@@ -78,10 +78,10 @@ yolov3-tiny-512_final.weights
 <img width="904" height="894" alt="image" src="https://github.com/user-attachments/assets/2696754a-e427-4ea9-b1a6-36c1af8f4150" />  
 
 
-最後にサーバーマシン上にあるweightファイルを自分のlocal PCに持って来て前と同様にモデル変換を行って終了する。  
+最後にサーバーマシン上にあるweightファイルを自分のlocal PCに持って来て前と同様にモデル変換を行ってxmodelを作成する。   
 WSL2で
 ```bash
-scp root@10.8.233.96:/data2/goto_data/darknet/dnet-work/work/backup/yolov3-tiny-512_final.weights /home/t_goto/Vitis-AI/ver2.5/Vitis-AI/yolov3-dlab  
+scp guest@10.8.233.96:/data2/goto_data/darknet/dnet-work/work_dir/work/backup/yolov3-tiny-512_final.weights /home/x-nics-dlab/Vitis-AI/ver2.5/Vitis-AI/yolov3-dlab/work/backup 
 ```
 
 
