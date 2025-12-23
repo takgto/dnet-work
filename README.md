@@ -81,7 +81,6 @@ yolov3-tiny-512_final.weights
 最後にサーバーマシン上にあるweightファイルを自分のlocal PCに持って来て前と同様にモデル変換を行って終了する。  
 WSL2で
 ```bash
-cd /data2/goto_data/darknet/dnet-work/work/backup
 scp root@10.8.233.96:/data2/goto_data/darknet/dnet-work/work/backup/yolov3-tiny-512_final.weights /home/t_goto/Vitis-AI/ver2.5/Vitis-AI/yolov3-dlab  
 ```
 
