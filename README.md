@@ -67,12 +67,12 @@ dnet-work/work_dir(自分で作ったディレクトリ)の下に
 ができて、途中経過のグラフ(Loss vs iteration）を見ることができる。 
 <img width="856" height="891" alt="image" src="https://github.com/user-attachments/assets/ddac545b-6fe1-4929-a463-db10d60b8ead" />
 
-結果の重みファイルは、dnet-work/work_dir/work/backup に次のようにできる。
-yolov3-tiny-512_10000.weights 
-yolov3-tiny-512_20000.weights 
-yolov3-tiny-512_last.weights 
-yolov3-tiny-512_final.weights 
-この場合、24000 iterations行うことに設定したので、途中の10000と20000のIteration結果が保存されている。*_last.weightsは最終24000 iteration後のweights結果であり、*_final.weightsは全体を通して一番Lossが低かった時のweightsである。 ]
+結果の重みファイルは、dnet-work/work_dir/work/backup に次のようにできる。 
+yolov3-tiny-512_10000.weights  
+yolov3-tiny-512_20000.weights  
+yolov3-tiny-512_last.weights  
+yolov3-tiny-512_final.weights  
+この場合、24000 iterations行うことに設定したので、途中の10000と20000のIteration結果が保存されている。*_last.weightsは最終24000 iteration後のweights結果であり、*_final.weightsは全体を通して一番Lossが低かった時のweightsである。 
 
 最終的なLossのカーブは次のようになった。 
 <img width="904" height="894" alt="image" src="https://github.com/user-attachments/assets/2696754a-e427-4ea9-b1a6-36c1af8f4150" />
