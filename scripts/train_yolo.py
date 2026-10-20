@@ -68,6 +68,7 @@ class Experiment:
     cfg: Optional[str] = None          # 独自ベースCFG（指定時はmodelの代わりに使用）
     pretrained: Optional[str] = None   # 事前学習重みの上書き（"none"でスクラッチ学習）
     partial: Optional[int] = None      # 事前学習重みの先頭N層だけを使う（darknet partial）
+    no_weight_check: bool = False      # 初期重みと cfg の対応検査を省く（旧条件の再現用）
 
 
 @dataclass
@@ -126,7 +127,11 @@ MODELS = {
     "yolov3-tiny": ModelConfig(
         name="yolov3-tiny",
         base_cfg="yolov3-tiny-416.cfg",
-        pretrained_weights="/workspace/darknet19_448.conv.23"
+        # yolov3-tiny.weights（COCO 学習済み）の先頭15層（層0〜14）。作り方:
+        #   ./darknet partial cfg/yolov3-tiny.cfg yolov3-tiny.weights yolov3-tiny.conv.15 15
+        # 以前の darknet19_448.conv.23 は YOLOv2 の Darknet-19 用で、tiny とは層構成が違うため
+        # 全層がずれた値で初期化されていた（tools/check_init_weights.py で確認可能）
+        pretrained_weights="/workspace/yolov3-tiny.conv.15"
     )
 }
 
@@ -192,6 +197,76 @@ def cfg_model_name(cfg_path: Path) -> str:
     """CFGファイル名から実験名を作る（末尾の解像度 -416 などは除く）
     例: yolov3-head-416.cfg → yolov3-head"""
     return re.sub(r'-\d+$', '', cfg_path.stem)
+
+
+def conv_float_boundaries(cfg_path: Path) -> list:
+    """cfg の conv 層ごとに、そこまでの累積 float 数を [(層番号, 累積数)] で返す。
+    Darknet の .weights は conv 層の biases / BN(scales, mean, var) / weights を
+    この順に並べただけなので、正しい初期重みの float 数はどこかの層の区切りに一致する。"""
+    sections = []
+    for raw in cfg_path.read_text().splitlines():
+        line = raw.split('#')[0].strip()
+        if line.startswith('[') and line.endswith(']'):
+            sections.append((line[1:-1].strip(), {}))
+        elif '=' in line and sections:
+            k, v = line.split('=', 1)
+            sections[-1][1][k.strip()] = v.strip()
+    net = sections[0][1] if sections and sections[0][0] in ('net', 'network') else {}
+    layers = [s for s in sections if s[0] not in ('net', 'network')]
+    c = int(net.get('channels', 3))
+    out_c, bounds, total = [], [(0, 0)], 0
+    for i, (t, kv) in enumerate(layers):
+        if t == 'convolutional':
+            f, k = int(kv['filters']), int(kv['size'])
+            g = int(kv.get('groups', 1))
+            bn = int(kv.get('batch_normalize', 0))
+            total += f * (4 if bn else 1) + f * (c // g) * k * k
+            c = f
+            bounds.append((i + 1, total))
+        elif t == 'route':
+            src = [int(x) for x in kv['layers'].split(',')]
+            src = [i + x if x < 0 else x for x in src]
+            c = sum(out_c[j] for j in src)
+            if 'groups' in kv:
+                c //= int(kv['groups'])
+        out_c.append(c)
+    return bounds
+
+
+def weights_float_count(path: Path) -> int:
+    """.weights のヘッダー（major, minor, revision, seen）を除いた float 数"""
+    import struct
+    with open(path, 'rb') as f:
+        major, minor, _ = struct.unpack('3i', f.read(12))
+    hdr = 20 if (major * 10 + minor >= 2 and major < 1000 and minor < 1000) else 16
+    return (path.stat().st_size - hdr) // 4
+
+
+def check_pretrained_fit(cfg_path: Path, weights_path: Path, partial: Optional[int]) -> bool:
+    """初期重みが cfg に対応しているかを float 数で検査する。
+    別ネットワーク用の重みを渡しても Darknet はエラーにせず、ずれた値で初期化するため。"""
+    if not weights_path.exists():
+        print(f"Warning: {weights_path} がホスト側に見つからないため、初期重みの検査をスキップ")
+        return True
+    n = weights_float_count(weights_path)
+    bounds = conv_float_boundaries(cfg_path)
+    if partial is not None:
+        need = max(b for l, b in bounds if l <= partial)
+        if n < need:
+            print(f"Error: {weights_path} の float 数 {n:,} が、先頭{partial}層に必要な {need:,} より少ない")
+            return False
+        print(f"初期重みの検査: float 数 {n:,}（先頭{partial}層で {need:,} を使用）"
+              "※ partial は先頭層の構成が元の重みと同じであることが前提")
+        return True
+    hit = [l for l, b in bounds if b == n]
+    if hit:
+        print(f"初期重みの検査: OK（float 数 {n:,} が cfg の先頭{hit[-1]}層の区切りと一致）")
+        return True
+    print(f"Error: 初期重み {weights_path}（float 数 {n:,}）が cfg {cfg_path.name} のどの層の区切りとも一致しません。")
+    print(f"       cfg の conv 全体の float 数は {bounds[-1][1]:,}。別のネットワーク用の重みの可能性が高いです。")
+    print("       （例: yolov3-tiny に darknet19_448.conv.23 を渡すと全層がずれた値で初期化される）")
+    print("       意図した重みなら --partial N で先頭N層だけを使ってください。")
+    return False
 
 
 def validate_cfg(cfg_path: Path) -> bool:
@@ -499,6 +574,16 @@ class YOLOTrainer:
             start_weights = to_container_path(pretrained)
             print(f"Starting from: {start_weights}")
 
+        # 事前学習重みが cfg に合っているかを検査（再開時は対象外）
+        if start_weights and not exp.resume_weights and not (final_weights.exists() and not exp.clear):
+            host_pre = Path(pretrained)
+            if str(host_pre).startswith(ws + "/"):
+                host_pre = Path.cwd() / str(host_pre)[len(ws) + 1:]
+            if exp.no_weight_check:
+                print("Warning: --no-weight-check 指定のため初期重みの検査を省略（cfg に合わない重みでも学習します）")
+            elif not check_pretrained_fit(output_cfg, host_pre, exp.partial):
+                return False
+
         # Step 3: コマンド構築（Docker内の絶対パスを使用）
         clear_flag = "-clear" if exp.clear else ""
         abs_final_weights = f"{ws}/{final_weights}"
@@ -673,7 +758,8 @@ def parse_config(config: dict) -> tuple[list[Experiment], GPUConfig, DockerConfi
             skip_train=exp_cfg.get("skip_train", False),
             cfg=exp_cfg.get("cfg"),
             pretrained=exp_cfg.get("pretrained"),
-            partial=exp_cfg.get("partial")
+            partial=exp_cfg.get("partial"),
+            no_weight_check=exp_cfg.get("no_weight_check", False)
         ))
     
     return experiments, gpu_config, docker_config, path_config
@@ -735,6 +821,10 @@ Examples:
     parser.add_argument(
         "--partial", type=int, metavar="N",
         help="事前学習重みの先頭N層だけを使う（バックボーンを変更したCFG用、darknet partialを自動実行）"
+    )
+    parser.add_argument(
+        "--no-weight-check", action="store_true",
+        help="初期重みと cfg の対応検査を省く（cfg に合わない旧初期重みでの学習を再現するとき用）"
     )
     parser.add_argument(
         "--clear", action="store_true",
@@ -830,7 +920,8 @@ Examples:
             skip_train=args.skip_train,
             cfg=args.cfg,
             pretrained=args.pretrained,
-            partial=args.partial
+            partial=args.partial,
+            no_weight_check=args.no_weight_check
         )
         
         trainer = YOLOTrainer(gpu_config, docker_config, path_config)
