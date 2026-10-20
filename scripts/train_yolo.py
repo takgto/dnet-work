@@ -11,6 +11,15 @@ Usage:
     
     # mAP計算のみ
     python train_yolo.py --resolution 512 --model yolov3-tiny --skip-train
+
+    # 独自CFGで学習（バックボーンはyolov3と同じ → darknet53.conv.74を使用）
+    python train_yolo.py -r 512 --cfg my-yolov3-head.cfg
+
+    # 独自CFGで学習（バックボーンを変更 → 事前学習重みの先頭N層だけ使用）
+    python train_yolo.py -r 512 --cfg my-yolov3-small.cfg --partial 36
+
+    # 独自CFGをスクラッチで学習
+    python train_yolo.py -r 512 --cfg my-net.cfg --pretrained none
 """
 
 import argparse
@@ -56,6 +65,9 @@ class Experiment:
     clear: bool = False
     resume_weights: Optional[str] = None
     skip_train: bool = False
+    cfg: Optional[str] = None          # 独自ベースCFG（指定時はmodelの代わりに使用）
+    pretrained: Optional[str] = None   # 事前学習重みの上書き（"none"でスクラッチ学習）
+    partial: Optional[int] = None      # 事前学習重みの先頭N層だけを使う（darknet partial）
 
 
 @dataclass
@@ -165,6 +177,85 @@ def generate_cfg(
     return True
 
 
+def resolve_cfg_path(cfg: str, work_subdir: Path) -> Optional[Path]:
+    """--cfgのパスを解決（カレントディレクトリ基準 → work_dir/work/ の順に探す）"""
+    candidates = [Path(cfg), work_subdir / cfg]
+    for c in candidates:
+        if c.exists():
+            return c
+    print(f"Error: CFGファイルが見つかりません: {cfg}")
+    print(f"  探した場所: {', '.join(str(c) for c in candidates)}")
+    return None
+
+
+def cfg_model_name(cfg_path: Path) -> str:
+    """CFGファイル名から実験名を作る（末尾の解像度 -416 などは除く）
+    例: yolov3-head-416.cfg → yolov3-head"""
+    return re.sub(r'-\d+$', '', cfg_path.stem)
+
+
+def validate_cfg(cfg_path: Path) -> bool:
+    """[yolo]層のclasses / mask / anchorsと、直前の[convolutional]のfiltersの整合性をチェック"""
+
+    sections = []  # [(セクション名, {key: value}, 開始行番号)]
+    for lineno, raw in enumerate(cfg_path.read_text().splitlines(), 1):
+        line = raw.split('#')[0].strip()
+        if not line:
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            sections.append((line[1:-1].strip(), {}, lineno))
+        elif '=' in line and sections:
+            key, value = line.split('=', 1)
+            sections[-1][1][key.strip()] = value.strip()
+
+    errors = []
+    yolo_count = 0
+    for i, (name, opts, lineno) in enumerate(sections):
+        if name != 'yolo':
+            continue
+        yolo_count += 1
+        where = f"[yolo] ({lineno}行目)"
+
+        classes = int(opts.get('classes', -1))
+        if classes != NUM_CLASSES:
+            errors.append(f"{where}: classes={classes} → classes={NUM_CLASSES} にしてください")
+
+        masks = [int(m) for m in opts.get('mask', '').split(',') if m.strip()]
+        num = int(opts.get('num', 0))
+        anchors = [a for a in opts.get('anchors', '').split(',') if a.strip()]
+        if len(anchors) != num * 2:
+            errors.append(f"{where}: anchorsの数({len(anchors)})が num={num} の2倍になっていません")
+        if any(m >= num for m in masks):
+            errors.append(f"{where}: mask={masks} に num={num} 以上の値があります")
+
+        # 直前の[convolutional]のfilters
+        prev = next((s for s in reversed(sections[:i]) if s[0] in ('convolutional', 'conv')), None)
+        expected = (NUM_CLASSES + 5) * len(masks)
+        if prev is None:
+            errors.append(f"{where}: 直前に[convolutional]がありません")
+        elif int(prev[1].get('filters', -1)) != expected:
+            errors.append(
+                f"{where}: 直前の[convolutional] ({prev[2]}行目) のfilters={prev[1].get('filters')}"
+                f" → ({NUM_CLASSES}+5)×{len(masks)} = {expected} にしてください"
+            )
+
+    if yolo_count == 0:
+        errors.append("[yolo]層が1つもありません")
+
+    net = next((s for s in sections if s[0] in ('net', 'network')), None)
+    if net is None or 'width' not in net[1] or 'height' not in net[1]:
+        errors.append("[net]にwidth/heightがありません（行頭に width=, height= を書いてください）")
+
+    if errors:
+        print(f"Error: CFGファイルに問題があります: {cfg_path}")
+        for e in errors:
+            print(f"  - {e}")
+        return False
+
+    print(f"CFG check OK: [yolo]層 {yolo_count}個, classes={NUM_CLASSES}")
+    return True
+
+
 def generate_obj_data(path_config: PathConfig) -> bool:
     """obj.dataファイルを自動生成（Docker内の絶対パスを使用）"""
     
@@ -194,7 +285,8 @@ def generate_docker_script(
     log_dir: str,
     work_dir: str,
     config_name: str,
-    skip_train: bool = False
+    skip_train: bool = False,
+    partial_cmd: Optional[str] = None
 ) -> None:
     """Docker内で実行するスクリプトを生成"""
     
@@ -212,6 +304,15 @@ echo "=========================================="
 
 '''
     
+    if partial_cmd and not skip_train:
+        script_content += f'''
+# 事前学習重みの先頭N層を切り出し（darknet partial）
+echo "[Partial Command]"
+echo "{partial_cmd}"
+{partial_cmd}
+echo ""
+'''
+
     if not skip_train:
         script_content += f'''
 # 学習実行
@@ -312,66 +413,100 @@ class YOLOTrainer:
             return False
         if not validate_model(exp.model):
             return False
-        
+
         model_config = MODELS[exp.model]
+        ws = "/workspace"
+
+        def to_container_path(p: str) -> str:
+            """Docker内のパスに変換（絶対パスはそのまま、相対パスは/workspace基準）"""
+            return p if p.startswith("/") else f"{ws}/{p}"
+
+        # ベースCFGと実験名の決定（--cfg指定時は独自CFG、それ以外は-mのモデル）
+        if exp.cfg:
+            base_cfg_path = resolve_cfg_path(exp.cfg, self.paths.work_subdir)
+            if base_cfg_path is None:
+                return False
+            name = cfg_model_name(base_cfg_path)
+        else:
+            base_cfg_path = self.paths.work_subdir / model_config.base_cfg
+            name = exp.model
+
+        # 事前学習重みの決定（--pretrained指定時は上書き、"none"でスクラッチ）
+        pretrained = exp.pretrained if exp.pretrained else model_config.pretrained_weights
+        if pretrained.lower() == "none":
+            pretrained = None
+        if exp.partial is not None and pretrained is None:
+            print("Error: --partial を使うには事前学習重みが必要です（--pretrained none とは併用不可）")
+            return False
+
+        config_name = f"{name}-{exp.resolution}"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        experiment_name = f"{exp.model}-{exp.resolution}_{timestamp}"
-        
+        experiment_name = f"{config_name}_{timestamp}"
+
         print("=" * 50)
         print("YOLOv3 Training Script")
         print("=" * 50)
         print(f"Experiment:   {experiment_name}")
-        print(f"Model:        {exp.model}")
+        print(f"Base CFG:     {base_cfg_path}")
         print(f"Resolution:   {exp.resolution}x{exp.resolution}")
         print(f"Classes:      {NUM_CLASSES}")
-        print(f"Pre-trained:  {model_config.pretrained_weights}")
+        pre_desc = pretrained if pretrained else "なし（スクラッチ学習）"
+        if exp.partial is not None:
+            pre_desc += f"（先頭{exp.partial}層のみ）"
+        print(f"Pre-trained:  {pre_desc}")
         print(f"Train GPUs:   {self.gpu.train}")
         print(f"mAP GPUs:     {self.gpu.map}")
         print(f"Clear:        {exp.clear}")
         print(f"Skip Train:   {exp.skip_train}")
         print("=" * 50)
-        
+
         # Step 1: CFGファイル生成
         print("\n[Step 1] CFGファイルの生成...")
-        base_cfg_path = self.paths.work_subdir / model_config.base_cfg
-        output_cfg = self.paths.work_subdir / f"{exp.model}-{exp.resolution}.cfg"
-        
+        output_cfg = self.paths.work_subdir / f"{config_name}.cfg"
+
         if not generate_cfg(base_cfg_path, output_cfg, exp.resolution):
             return False
-        
-        # Step 2: Weightsファイルの決定
-        print("\n[Step 2] Weightsファイルの決定...")
-        final_weights = self.paths.backup_dir / f"{exp.model}-{exp.resolution}_last.weights"
-        
-        if exp.resume_weights:
-            start_weights = exp.resume_weights
-            print(f"Resuming from: {start_weights}")
-        elif final_weights.exists() and not exp.clear:
-            start_weights = str(final_weights)
-            print(f"Resuming from: {start_weights}")
-        else:
-            start_weights = model_config.pretrained_weights
-            print(f"Starting from: {start_weights}")
-        
-        # Step 3: コマンド構築（Docker内の絶対パスを使用）
-        clear_flag = "-clear" if exp.clear else ""
-        
-        # Docker内の絶対パス
-        ws = "/workspace"
+        if exp.cfg and not validate_cfg(output_cfg):
+            return False
+
         abs_data_file = f"{ws}/{self.paths.data_file}"
         abs_output_cfg = f"{ws}/{output_cfg}"
-        abs_final_weights = f"{ws}/{final_weights}"
-        
-        # start_weightsを絶対パスに変換（既に/workspaceで始まっている場合はそのまま）
-        if start_weights.startswith("/workspace"):
-            abs_start_weights = start_weights
+
+        # Step 2: Weightsファイルの決定
+        print("\n[Step 2] Weightsファイルの決定...")
+        final_weights = self.paths.backup_dir / f"{config_name}_last.weights"
+        partial_cmd = None
+
+        if exp.resume_weights:
+            start_weights = to_container_path(exp.resume_weights)
+            print(f"Resuming from: {start_weights}")
+        elif final_weights.exists() and not exp.clear:
+            start_weights = to_container_path(str(final_weights))
+            print(f"Resuming from: {start_weights}")
+        elif pretrained is None:
+            start_weights = None
+            print("Starting from: スクラッチ（事前学習重みなし）")
+        elif exp.partial is not None:
+            # 事前学習重みの先頭N層だけを切り出してから学習する
+            partial_weights = self.paths.backup_dir / f"{name}.conv.{exp.partial}"
+            start_weights = to_container_path(str(partial_weights))
+            partial_cmd = (
+                f"{self.paths.darknet_path} partial "
+                f"{abs_output_cfg} {to_container_path(pretrained)} {start_weights} {exp.partial}"
+            )
+            print(f"Starting from: {start_weights}（{pretrained} の先頭{exp.partial}層）")
         else:
-            abs_start_weights = f"{ws}/{start_weights}"
-        
+            start_weights = to_container_path(pretrained)
+            print(f"Starting from: {start_weights}")
+
+        # Step 3: コマンド構築（Docker内の絶対パスを使用）
+        clear_flag = "-clear" if exp.clear else ""
+        abs_final_weights = f"{ws}/{final_weights}"
+
         # チャートは実行ディレクトリ(/workspace)に自動出力され、学習後にlog_dirにコピー
         train_cmd = (
             f"{self.paths.darknet_path} detector train "
-            f"{abs_data_file} {abs_output_cfg} {abs_start_weights} "
+            f"{abs_data_file} {abs_output_cfg} {start_weights or ''} "
             f"-dont_show -gpus {self.gpu.train} {clear_flag}"
         ).strip()
         
@@ -397,8 +532,9 @@ class YOLOTrainer:
             final_weights=str(final_weights),
             log_dir=str(self.paths.log_dir),
             work_dir=str(self.paths.work_dir),
-            config_name=f"{exp.model}-{exp.resolution}",
-            skip_train=exp.skip_train
+            config_name=config_name,
+            skip_train=exp.skip_train,
+            partial_cmd=partial_cmd
         )
         
         # Step 5: Docker実行
@@ -454,12 +590,13 @@ class YOLOTrainer:
         print("=" * 50)
         
         for i, exp in enumerate(experiments, 1):
-            print(f"\n[{i}/{len(experiments)}] {exp.model} @ {exp.resolution}x{exp.resolution}")
-            
+            label = f"{exp.cfg or exp.model}-{exp.resolution}"
+            print(f"\n[{i}/{len(experiments)}] {exp.cfg or exp.model} @ {exp.resolution}x{exp.resolution}")
+
             if self.run_experiment(exp):
-                results["success"].append(f"{exp.model}-{exp.resolution}")
+                results["success"].append(label)
             else:
-                results["failed"].append(f"{exp.model}-{exp.resolution}")
+                results["failed"].append(label)
         
         # サマリー出力
         summary_file = batch_log_dir / "summary.txt"
@@ -530,10 +667,13 @@ def parse_config(config: dict) -> tuple[list[Experiment], GPUConfig, DockerConfi
     for exp_cfg in config.get("experiments", []):
         experiments.append(Experiment(
             resolution=exp_cfg["resolution"],
-            model=exp_cfg["model"],
+            model=exp_cfg.get("model", "yolov3"),
             clear=exp_cfg.get("clear", False),
             resume_weights=exp_cfg.get("resume_weights"),
-            skip_train=exp_cfg.get("skip_train", False)
+            skip_train=exp_cfg.get("skip_train", False),
+            cfg=exp_cfg.get("cfg"),
+            pretrained=exp_cfg.get("pretrained"),
+            partial=exp_cfg.get("partial")
         ))
     
     return experiments, gpu_config, docker_config, path_config
@@ -581,6 +721,20 @@ Examples:
     parser.add_argument(
         "--model", "-m", type=str, choices=["yolov3", "yolov3-tiny"],
         help="モデルタイプ"
+    )
+    parser.add_argument(
+        "--cfg", type=str, metavar="CFG",
+        help="独自のベースCFGファイル（カレントディレクトリ基準、無ければwork_dir/work/から探す）。"
+             "指定時は-mの代わりにこのCFGを使い、出力名はCFGファイル名から決まる"
+    )
+    parser.add_argument(
+        "--pretrained", type=str, metavar="WEIGHTS",
+        help="事前学習重み（デフォルトは-mのモデルのもの: yolov3→darknet53.conv.74）。"
+             "noneでスクラッチ学習"
+    )
+    parser.add_argument(
+        "--partial", type=int, metavar="N",
+        help="事前学習重みの先頭N層だけを使う（バックボーンを変更したCFG用、darknet partialを自動実行）"
     )
     parser.add_argument(
         "--clear", action="store_true",
@@ -631,10 +785,10 @@ Examples:
         config = load_config(config_path)
         experiments, gpu_config, docker_config, path_config = parse_config(config)
         
-        # コマンドライン引数で上書き
+        # コマンドライン引数で上書き（darknet_pathは設定ファイルの値を引き継ぐ）
         if args.work_dir:
-            path_config = PathConfig(work_dir=Path(args.work_dir))
-        
+            path_config = PathConfig(work_dir=Path(args.work_dir), darknet_path=path_config.darknet_path)
+
         trainer = YOLOTrainer(gpu_config, docker_config, path_config)
         results = trainer.run_batch(experiments)
         
@@ -642,8 +796,12 @@ Examples:
     
     else:
         # 単一実験モード
-        if not args.resolution or not args.model:
-            parser.error("--resolution と --model は必須です（--batch を使用しない場合）")
+        if not args.resolution:
+            parser.error("--resolution は必須です（--batch を使用しない場合）")
+        if not args.model and not args.cfg:
+            parser.error("--model か --cfg のどちらかが必要です（--batch を使用しない場合）")
+        if args.partial is not None and args.partial <= 0:
+            parser.error("--partial には1以上の層数を指定してください")
         
         # デフォルト設定またはconfig.yamlから読み込み
         if config_path.exists():
@@ -656,7 +814,7 @@ Examples:
         
         # コマンドライン引数で上書き
         if args.work_dir:
-            path_config = PathConfig(work_dir=Path(args.work_dir))
+            path_config = PathConfig(work_dir=Path(args.work_dir), darknet_path=path_config.darknet_path)
         if args.gpus_train:
             gpu_config.train = args.gpus_train
         if args.gpus_map:
@@ -666,10 +824,13 @@ Examples:
         
         experiment = Experiment(
             resolution=args.resolution,
-            model=args.model,
+            model=args.model or "yolov3",  # --cfgのみ指定時はyolov3の事前学習重みを使う
             clear=args.clear,
             resume_weights=args.resume,
-            skip_train=args.skip_train
+            skip_train=args.skip_train,
+            cfg=args.cfg,
+            pretrained=args.pretrained,
+            partial=args.partial
         )
         
         trainer = YOLOTrainer(gpu_config, docker_config, path_config)
