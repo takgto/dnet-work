@@ -69,6 +69,7 @@ class Experiment:
     pretrained: Optional[str] = None   # 事前学習重みの上書き（"none"でスクラッチ学習）
     partial: Optional[int] = None      # 事前学習重みの先頭N層だけを使う（darknet partial）
     no_weight_check: bool = False      # 初期重みと cfg の対応検査を省く（旧条件の再現用）
+    map_weights: Optional[str] = None  # mAP を計算する重み（--skip-train 用。省略時は *_last.weights）
 
 
 @dataclass
@@ -526,6 +527,8 @@ class YOLOTrainer:
         print(f"Resolution:   {exp.resolution}x{exp.resolution}")
         print(f"Classes:      {NUM_CLASSES}")
         pre_desc = pretrained if pretrained else "なし（スクラッチ学習）"
+        if exp.skip_train:
+            pre_desc = "（--skip-train のため不使用）"
         if exp.partial is not None:
             pre_desc += f"（先頭{exp.partial}層のみ）"
         print(f"Pre-trained:  {pre_desc}")
@@ -552,7 +555,10 @@ class YOLOTrainer:
         final_weights = self.paths.backup_dir / f"{config_name}_last.weights"
         partial_cmd = None
 
-        if exp.resume_weights:
+        if exp.skip_train:
+            start_weights = None
+            print("Starting from: （--skip-train のため学習せず、初期重みは使わない）")
+        elif exp.resume_weights:
             start_weights = to_container_path(exp.resume_weights)
             print(f"Resuming from: {start_weights}")
         elif final_weights.exists() and not exp.clear:
@@ -575,7 +581,8 @@ class YOLOTrainer:
             print(f"Starting from: {start_weights}")
 
         # 事前学習重みが cfg に合っているかを検査（再開時は対象外）
-        if start_weights and not exp.resume_weights and not (final_weights.exists() and not exp.clear):
+        if (start_weights and not exp.skip_train and not exp.resume_weights
+                and not (final_weights.exists() and not exp.clear)):
             host_pre = Path(pretrained)
             if str(host_pre).startswith(ws + "/"):
                 host_pre = Path.cwd() / str(host_pre)[len(ws) + 1:]
@@ -586,6 +593,26 @@ class YOLOTrainer:
 
         # Step 3: コマンド構築（Docker内の絶対パスを使用）
         clear_flag = "-clear" if exp.clear else ""
+        # mAP を計算する重みの指定（--map-weights）。/workspace/ 基準の相対パスに直す
+        if exp.map_weights:
+            if not exp.skip_train:
+                print("Error: --map-weights は --skip-train と一緒に使ってください")
+                return False
+            mw = exp.map_weights
+            if mw.startswith(ws + "/"):
+                mw = mw[len(ws) + 1:]
+            elif mw.startswith("/"):
+                print(f"Error: --map-weights は /workspace（{Path.cwd()}）以下を指定してください: {mw}")
+                return False
+            elif "/" not in mw:
+                mw = str(self.paths.backup_dir / mw)   # ファイル名だけなら backup/ から探す
+            final_weights = Path(mw)
+            if not final_weights.exists():
+                print(f"Error: 重みファイルが見つかりません: {final_weights}")
+                return False
+            experiment_name = f"{config_name}_{final_weights.stem.replace(config_name + '_', '')}_{timestamp}"
+            print(f"mAP Weights: {final_weights}")
+
         abs_final_weights = f"{ws}/{final_weights}"
 
         # チャートは実行ディレクトリ(/workspace)に自動出力され、学習後にlog_dirにコピー
@@ -759,7 +786,8 @@ def parse_config(config: dict) -> tuple[list[Experiment], GPUConfig, DockerConfi
             cfg=exp_cfg.get("cfg"),
             pretrained=exp_cfg.get("pretrained"),
             partial=exp_cfg.get("partial"),
-            no_weight_check=exp_cfg.get("no_weight_check", False)
+            no_weight_check=exp_cfg.get("no_weight_check", False),
+            map_weights=exp_cfg.get("map_weights")
         ))
     
     return experiments, gpu_config, docker_config, path_config
@@ -825,6 +853,11 @@ Examples:
     parser.add_argument(
         "--no-weight-check", action="store_true",
         help="初期重みと cfg の対応検査を省く（cfg に合わない旧初期重みでの学習を再現するとき用）"
+    )
+    parser.add_argument(
+        "--map-weights", type=str, metavar="WEIGHTS",
+        help="--skip-train 時に mAP を計算する重み（例: yolov3-tiny-416_10000.weights。"
+             "ファイル名だけなら backup/ から探す。省略時は *_last.weights）"
     )
     parser.add_argument(
         "--clear", action="store_true",
@@ -921,7 +954,8 @@ Examples:
             cfg=args.cfg,
             pretrained=args.pretrained,
             partial=args.partial,
-            no_weight_check=args.no_weight_check
+            no_weight_check=args.no_weight_check,
+            map_weights=args.map_weights
         )
         
         trainer = YOLOTrainer(gpu_config, docker_config, path_config)
